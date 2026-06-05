@@ -1,6 +1,7 @@
 import anthropic
 from data.fixtures import PORTFOLIOS
 from agents import portfolio_agent, risk_agent, goals_agent
+from rag.hybrid_search import hybrid_search
 
 _client: anthropic.AsyncAnthropic | None = None
 
@@ -40,8 +41,17 @@ async def _run_client_workflow(message: str, history: list[dict], user_id: str) 
     risk_analysis = await risk_agent.run(user_id, portfolio_analysis)
     goals_analysis = await goals_agent.run(user_id, portfolio_analysis, risk_analysis)
 
-    synthesis_prompt = f"""User asked: "{message}"
+    rag_context = ""
+    try:
+        hits = hybrid_search(message, n_results=3, candidate_k=15)
+        if hits:
+            snippets = "\n".join(f"- [{h['metadata']['source']}] {h['text'][:200]}" for h in hits)
+            rag_context = f"\nRelevant financial research:\n{snippets}\n"
+    except Exception:
+        pass
 
+    synthesis_prompt = f"""User asked: "{message}"
+{rag_context}
 Portfolio Agent: {portfolio_analysis}
 Risk Agent: {risk_analysis}
 Goals Agent: {goals_analysis}
