@@ -8,6 +8,7 @@ from db.models import User, Message
 from api.auth import get_current_user
 from agents.orchestrator import run_orchestrator
 from guardrails.validator import validate
+from services.event_bus import publish
 import uuid
 
 router = APIRouter()
@@ -62,6 +63,13 @@ async def chat(
     )
     db.add(assistant_msg)
     await db.commit()
+
+    await publish({
+        "type": "agent_response",
+        "user_id": current_user.id,
+        "message": guard.sanitized,
+        "response": response,
+    })
 
     return {"response": response}
 

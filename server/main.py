@@ -10,6 +10,7 @@ from api.stream import router as stream_router
 from api.context import router as context_router
 from api.vision import router as vision_router
 from api.rag import router as rag_router
+from api.events import router as events_router
 
 
 @asynccontextmanager
@@ -36,6 +37,7 @@ app.include_router(stream_router, prefix="/api/stream", tags=["stream"])
 app.include_router(context_router, prefix="/api/context", tags=["context"])
 app.include_router(vision_router, prefix="/api/vision", tags=["vision"])
 app.include_router(rag_router, prefix="/api/rag", tags=["rag"])
+app.include_router(events_router, prefix="/api/events", tags=["events"])
 
 
 @app.get("/health")
