@@ -1,7 +1,14 @@
 import anthropic
 from data.fixtures import PORTFOLIOS
 
-client = anthropic.AsyncAnthropic()
+_client: anthropic.AsyncAnthropic | None = None
+
+
+def get_client() -> anthropic.AsyncAnthropic:
+    global _client
+    if _client is None:
+        _client = anthropic.AsyncAnthropic()
+    return _client
 
 SYSTEM_PROMPT = """You are AuraWealth AI, a personal wealth management assistant.
 You have access to the user's portfolio data and can answer questions about:
@@ -25,7 +32,7 @@ async def run_orchestrator(
 
     messages = history + [{"role": "user", "content": message}]
 
-    response = await client.messages.create(
+    response = await get_client().messages.create(
         model="claude-sonnet-4-6",
         max_tokens=1024,
         system=SYSTEM_PROMPT + portfolio_context,
