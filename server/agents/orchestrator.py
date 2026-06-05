@@ -2,6 +2,7 @@ import anthropic
 from data.fixtures import PORTFOLIOS
 from agents import portfolio_agent, risk_agent, goals_agent
 from rag.hybrid_search import hybrid_search
+from agents.langgraph_orchestrator import run_langgraph_orchestrator
 
 _client: anthropic.AsyncAnthropic | None = None
 
@@ -32,7 +33,7 @@ async def run_orchestrator(
 ) -> str:
     if user_role == "advisor":
         return await _run_advisor_workflow(message, history)
-    return await _run_client_workflow(message, history, user_id)
+    return await run_langgraph_orchestrator(message, history, user_id)
 
 
 async def _run_client_workflow(message: str, history: list[dict], user_id: str) -> str:
