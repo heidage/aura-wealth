@@ -7,6 +7,7 @@ from db.database import get_db
 from db.models import User, Message
 from api.auth import get_current_user
 from agents.orchestrator import run_orchestrator
+from guardrails.validator import validate
 import uuid
 
 router = APIRouter()
@@ -22,6 +23,10 @@ async def chat(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    guard = validate(request.message)
+    if guard.blocked:
+        raise HTTPException(status_code=400, detail=guard.reason)
+
     result = await db.execute(
         select(Message)
         .where(Message.user_id == current_user.id)
@@ -37,13 +42,13 @@ async def chat(
         id=str(uuid.uuid4()),
         user_id=current_user.id,
         role="user",
-        content=request.message,
+        content=guard.sanitized,
     )
     db.add(user_msg)
     await db.commit()
 
     response = await run_orchestrator(
-        message=request.message,
+        message=guard.sanitized,
         history=history,
         user_id=current_user.id,
         user_role=current_user.role.value,
