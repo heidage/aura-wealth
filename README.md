@@ -28,6 +28,79 @@ npm install
 npm run dev
 ```
 
+## Architecture
+
+```mermaid
+graph TD
+    Browser["Browser (React)"]
+
+    subgraph FastAPI
+        Auth["Auth (JWT)"]
+        ChatAPI["POST /api/chat"]
+        EventsSSE["GET /api/events/stream (SSE)"]
+        PricesSSE["GET /api/stream/prices (SSE)"]
+        VisionAPI["POST /api/vision/analyze"]
+        RAGAPI["GET /api/rag/search\nGET /api/rag/hybrid-search"]
+    end
+
+    subgraph Guardrails
+        Validator["13 injection patterns\nPII redaction"]
+    end
+
+    subgraph LangGraph["LangGraph Orchestrator"]
+        Router["Router Node"]
+        Portfolio["PortfolioAgent"]
+        Risk["RiskAgent"]
+        Goals["GoalsAgent"]
+        Market["MarketAgent"]
+        Synthesizer["Synthesizer"]
+    end
+
+    subgraph RAG["RAG Pipeline"]
+        Semantic["ChromaDB\n(text-embedding-3-small)"]
+        BM25["BM25 Re-ranker"]
+        HybridSearch["Hybrid Search\n0.5×semantic + 0.5×BM25"]
+    end
+
+    subgraph EventBus["Async Event Bus"]
+        Queue["asyncio.Queue"]
+        Redis["Redis pub/sub"]
+    end
+
+    subgraph MCP["MCP Server (stdio)"]
+        Tools["4 tools: portfolio\nprices, history, context"]
+    end
+
+    SQLite[("SQLite\nUsers + Messages")]
+    DuckDuckGo["DuckDuckGo DDGS"]
+
+    Browser -->|login| Auth
+    Browser -->|chat| ChatAPI
+    Browser -->|SSE| EventsSSE
+    Browser -->|SSE| PricesSSE
+
+    ChatAPI --> Validator
+    Validator -->|sanitized| LangGraph
+    Router --> Portfolio
+    Router --> Risk
+    Router --> Goals
+    Router --> Market
+    Market -->|tool_use| DuckDuckGo
+    Portfolio & Risk & Goals & Market --> Synthesizer
+    Synthesizer -->|response| ChatAPI
+    ChatAPI -->|publish| Queue
+    Queue -->|broadcast| EventsSSE
+
+    Redis -->|pub/sub| PricesSSE
+    RAGAPI --> HybridSearch
+    HybridSearch --> Semantic
+    HybridSearch --> BM25
+
+    ChatAPI --> SQLite
+    Auth --> SQLite
+    MCP --> SQLite
+```
+
 ## Demo Users
 
 | Email | Password | Role |
