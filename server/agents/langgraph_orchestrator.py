@@ -1,20 +1,21 @@
 """
-Hierarchical LangGraph orchestrator — replaces the sequential agent chain.
+Hierarchical LangGraph orchestrator.
 
 Graph topology:
-  START → router → [conditional] → portfolio | risk | goals | synthesizer
-  portfolio → [conditional] → risk | goals | synthesizer
-  risk → [conditional] → goals | synthesizer
-  goals → synthesizer → END
+  START → router → [conditional] → portfolio | risk | goals | market | synthesizer
+  portfolio → [conditional] → risk | goals | market | synthesizer
+  risk → [conditional] → goals | market | synthesizer
+  goals → [conditional] → market | synthesizer
+  market → synthesizer → END
 
 The router dynamically selects which expert nodes to invoke based on query
-intent, so a pure risk question never pays the latency cost of portfolio/goals.
+intent, so a pure risk question never pays the latency cost of other nodes.
+Market node uses live web search grounding via Claude tool use.
 """
 
 import anthropic
 from typing import TypedDict, Literal
 from langgraph.graph import StateGraph, START, END
-from data.fixtures import PORTFOLIOS
 from rag.hybrid_search import hybrid_search
 
 _client: anthropic.AsyncAnthropic | None = None
@@ -39,6 +40,7 @@ class WealthState(TypedDict):
     portfolio_output: str
     risk_output: str
     goals_output: str
+    market_output: str
     rag_context: str
     response: str
 
@@ -47,9 +49,10 @@ class WealthState(TypedDict):
 # Routing helpers
 # ---------------------------------------------------------------------------
 
-_PORTFOLIO_KEYWORDS = {"portfolio", "holdings", "allocation", "stock", "etf", "fund", "invest", "asset"}
+_PORTFOLIO_KEYWORDS = {"portfolio", "holdings", "allocation", "etf", "fund", "invest", "asset"}
 _RISK_KEYWORDS = {"risk", "volatile", "volatility", "exposure", "safe", "loss", "drawdown", "hedge"}
 _GOALS_KEYWORDS = {"goal", "retire", "retirement", "save", "saving", "target", "plan", "future", "timeline"}
+_MARKET_KEYWORDS = {"market", "news", "today", "current", "price", "stock", "economy", "fed", "interest", "inflation", "earnings", "trend"}
 
 
 def _classify_agents(query: str) -> list[str]:
@@ -61,6 +64,8 @@ def _classify_agents(query: str) -> list[str]:
         agents.append("risk")
     if words & _GOALS_KEYWORDS:
         agents.append("goals")
+    if words & _MARKET_KEYWORDS:
+        agents.append("market")
     return agents or ["portfolio", "risk", "goals"]
 
 
@@ -107,6 +112,13 @@ async def goals_node(state: WealthState) -> dict:
     return {"goals_output": output}
 
 
+async def market_node(state: WealthState) -> dict:
+    from agents.market_agent import run
+    portfolio_ctx = state.get("portfolio_output", "")
+    output = await run(state["query"], portfolio_context=portfolio_ctx)
+    return {"market_output": output}
+
+
 async def synthesizer_node(state: WealthState) -> dict:
     parts = []
     if state.get("rag_context"):
@@ -117,6 +129,8 @@ async def synthesizer_node(state: WealthState) -> dict:
         parts.append(f"Risk Agent:\n{state['risk_output']}")
     if state.get("goals_output"):
         parts.append(f"Goals Agent:\n{state['goals_output']}")
+    if state.get("market_output"):
+        parts.append(f"Market Agent (live web):\n{state['market_output']}")
 
     synthesis_prompt = (
         f'User asked: "{state["query"]}"\n\n'
@@ -140,7 +154,7 @@ async def synthesizer_node(state: WealthState) -> dict:
 # Conditional edge functions
 # ---------------------------------------------------------------------------
 
-def _after_router(state: WealthState) -> Literal["portfolio", "risk", "goals", "synthesizer"]:
+def _after_router(state: WealthState) -> Literal["portfolio", "risk", "goals", "market", "synthesizer"]:
     active = state["active_agents"]
     if "portfolio" in active:
         return "portfolio"
@@ -148,48 +162,63 @@ def _after_router(state: WealthState) -> Literal["portfolio", "risk", "goals", "
         return "risk"
     if "goals" in active:
         return "goals"
+    if "market" in active:
+        return "market"
     return "synthesizer"
 
 
-def _after_portfolio(state: WealthState) -> Literal["risk", "goals", "synthesizer"]:
+def _after_portfolio(state: WealthState) -> Literal["risk", "goals", "market", "synthesizer"]:
     active = state["active_agents"]
     if "risk" in active:
         return "risk"
     if "goals" in active:
         return "goals"
+    if "market" in active:
+        return "market"
     return "synthesizer"
 
 
-def _after_risk(state: WealthState) -> Literal["goals", "synthesizer"]:
-    if "goals" in state["active_agents"]:
+def _after_risk(state: WealthState) -> Literal["goals", "market", "synthesizer"]:
+    active = state["active_agents"]
+    if "goals" in active:
         return "goals"
+    if "market" in active:
+        return "market"
+    return "synthesizer"
+
+
+def _after_goals(state: WealthState) -> Literal["market", "synthesizer"]:
+    if "market" in state["active_agents"]:
+        return "market"
     return "synthesizer"
 
 
 # ---------------------------------------------------------------------------
-# Graph compilation (singleton)
+# Graph compilation (singleton, reset on module reload)
 # ---------------------------------------------------------------------------
 
-def _build_graph() -> StateGraph:
+_graph = None
+
+
+def _build_graph():
     g = StateGraph(WealthState)
 
     g.add_node("router", router_node)
     g.add_node("portfolio", portfolio_node)
     g.add_node("risk", risk_node)
     g.add_node("goals", goals_node)
+    g.add_node("market", market_node)
     g.add_node("synthesizer", synthesizer_node)
 
     g.add_edge(START, "router")
-    g.add_conditional_edges("router", _after_router, ["portfolio", "risk", "goals", "synthesizer"])
-    g.add_conditional_edges("portfolio", _after_portfolio, ["risk", "goals", "synthesizer"])
-    g.add_conditional_edges("risk", _after_risk, ["goals", "synthesizer"])
-    g.add_edge("goals", "synthesizer")
+    g.add_conditional_edges("router", _after_router, ["portfolio", "risk", "goals", "market", "synthesizer"])
+    g.add_conditional_edges("portfolio", _after_portfolio, ["risk", "goals", "market", "synthesizer"])
+    g.add_conditional_edges("risk", _after_risk, ["goals", "market", "synthesizer"])
+    g.add_conditional_edges("goals", _after_goals, ["market", "synthesizer"])
+    g.add_edge("market", "synthesizer")
     g.add_edge("synthesizer", END)
 
     return g.compile()
-
-
-_graph = None
 
 
 def get_graph():
@@ -216,6 +245,7 @@ async def run_langgraph_orchestrator(
         "portfolio_output": "",
         "risk_output": "",
         "goals_output": "",
+        "market_output": "",
         "rag_context": "",
         "response": "",
     }
